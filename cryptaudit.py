@@ -178,6 +178,11 @@ RULES: dict[str, dict] = {
         "severity": Severity.ERROR,
         "description": "JWT decoded without verification",
     },
+    "CR021": {
+        "name": "weak-pbkdf2-iterations",
+        "severity": Severity.WARNING,
+        "description": "PBKDF2 iteration count is too low (< 100,000)",
+    },
 }
 
 
@@ -482,6 +487,31 @@ class CryptoAnalyzer(ast.NodeVisitor):
                 elif algorithms_kw is None and options_kw is None:
                     # PyJWT >= 2.0 requires algorithms parameter
                     pass  # Don't flag — might be using default verification
+
+        # ── CR021: Weak PBKDF2 iterations ─────────────────────────────────
+        if "CR021" not in self.ignored:
+            # Check for PBKDF2 with low iteration count
+            pbkdf2_patterns = ["pbkdf2", "PBKDF2", "pbkdf2_hmac"]
+            if any(pattern in func_name for pattern in pbkdf2_patterns):
+                # PBKDF2 typically has signature: pbkdf2_hmac(hash_name, password, salt, iterations)
+                # or: PBKDF2(password, salt, dkLen, iterations)
+                # Check for iterations argument (usually 3rd or 4th positional, or 'iterations'/'count' keyword)
+                iterations = None
+                
+                # Check keyword arguments first
+                iterations_kw = get_keyword_arg(node, "iterations") or get_keyword_arg(node, "count")
+                if iterations_kw and isinstance(iterations_kw, ast.Constant):
+                    iterations = iterations_kw.value
+                # Check positional arguments (iterations usually at index 3 for pbkdf2_hmac)
+                elif len(node.args) >= 4 and isinstance(node.args[3], ast.Constant):
+                    iterations = node.args[3].value
+                
+                # NIST recommends minimum 100,000 iterations for PBKDF2-HMAC-SHA256
+                if iterations is not None and isinstance(iterations, int):
+                    if iterations < 100_000:
+                        self._add("CR021", node,
+                                  f"PBKDF2 iteration count too low: {iterations:,} (recommended: >= 100,000)",
+                                  fix=f"Increase iterations to at least 100,000 (NIST SP 800-132 recommendation)")
 
         # ── CR006: Password hashing ───────────────────────────────────────
         if "CR006" not in self.ignored:
